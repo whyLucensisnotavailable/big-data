@@ -1,0 +1,192 @@
+---
+title: "Code to generate inputs tables and figures - AW methods"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+cat("\014") 
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set script name
+
+```{r}
+file_name <- "AW_method_Tables_3_to_5"
+```
+
+# Load packages
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyr)
+library(dplyr)
+```
+
+# Load transformed lagged characteristics
+
+```{r}
+load("../data_sets/scaled_annual_data_JFE.Rdata")
+```
+
+# Load masked fund returns
+
+```{r}
+load("../data_sets/masked_fund_returns.Rdata")
+```
+
+# Load masked fund size
+
+```{r}
+load("../data_sets/masked_fund_size.Rdata")
+```
+
+
+# Functions
+
+```{r}
+computePortfolioReturns <- function(w,fund.returns){
+  portf_ret <- array(NA,c(12,1))
+  w_matrix <- c()
+  for(r in 1:12){
+    portf_ret[r]  <-  sum(w*fund.returns[,r],na.rm = TRUE)
+    if(r<12){
+      w <- w*(1+fund.returns[,r+1]) %>% 
+        ifelse(is.na(.),0,.) 
+      w <- w/sum(w)
+      w_matrix <- cbind(w_matrix,w)
+    }
+  }
+  return(list(portf_ret=portf_ret,w_matrix=w_matrix))
+}
+
+```
+
+
+# Fund characteristics
+
+```{r}
+vars <- c("alpha6_1mo_12m","alpha6_1mo_12m_lag_1","alpha6_tstat_lag_1","mtna_lag_1","exp_ratio_lag_1","age_lag_1","flow_12m_lag_1","mgr_tenure_lag_1","turn_ratio_lag_1","flow_vol_12m_lag_1","value_added_12m_lag_1","beta_market_tstat_lag_1","beta_profit_tstat_lag_1","beta_invest_tstat_lag_1","beta_size_tstat_lag_1","beta_value_tstat_lag_1","beta_mom_tstat_lag_1","R2_lag_1")  
+
+scaled_annual_data <- scaled_annual_data_JFE %>% 
+  select(fundno,Date,all_of(vars))
+```
+
+
+# Out-of-sample experiment
+
+
+```{r}
+
+# initialize variables
+date.vector <- sort(unique(scaled_annual_data$Date))
+total_size <- length(date.vector)
+panel_length <- 10
+
+# list of models (must be implemented according to that sequence)
+models <- c("AW")
+
+# names of all strategies
+strategies_asset_weighted <- "AW"
+
+# initialize matrices for storing portfolio returns
+this_portf_ret_AW <- c()
+portf_ret_matrix_AW <- c()
+
+# initialize vector for portfolio dates
+portf_dates <- c()
+
+# initialize variables for turnover computation
+w.big.AW <- array(0,c(n_distinct(scaled_annual_data$fundno),(total_size-panel_length),length(strategies_asset_weighted))) 
+rownames(w.big.AW) <- sort((unique(scaled_annual_data$fundno)))
+turnover.AW <- array(0,c((total_size-panel_length),length(strategies_asset_weighted)))
+
+# Start recursion
+for(t in 1:(total_size-panel_length)){
+  
+  print(paste("Iteration",t,"out of",total_size-panel_length))
+  
+  index <- 1
+  
+  #-----------------------------------
+  #         DATA
+  #------------------------------------
+  
+  # funds in this iteration
+  fund_codes <- masked_fund_size %>% 
+    filter(Date %in% date.vector[t+panel_length]) %>% 
+    dplyr::select(fundno) %>% 
+    as.matrix() %>% 
+    as.character()
+  
+  # Fund size
+  Size <- masked_fund_size %>% 
+    filter(Date == date.vector[t+panel_length]) %>% 
+    select(mtna_lag_1) %>% 
+    as.matrix() %>% 
+    as.numeric
+  
+  # fund returns of this iteration
+  initial.portf.date <- paste0(substr(date.vector[t+panel_length],1,4),"01")
+  final.portf.date <-date.vector[t+panel_length]
+  fund.returns <- masked_fund_returns %>%
+    ungroup() %>% 
+    dplyr::select(Date,fundno,mret) %>%
+    filter(Date>=initial.portf.date,Date<=final.portf.date,fundno %in% fund_codes) %>% 
+    spread(.,fundno,mret) %>%
+    dplyr::select(-Date) %>%
+    t() %>%
+    as.matrix()
+  
+  #-----------------------------------
+  #         START MODELLING
+  #------------------------------------
+  
+  #-----------------------------------
+  # Asset-weigthed (AW) portfolios
+  #-----------------------------------
+  w.aw <- Size/sum(Size)
+  portf_ret <- computePortfolioReturns(w.aw,fund.returns)$portf_ret
+  this_portf_ret_AW <- cbind(this_portf_ret_AW,portf_ret)
+  # compute turnover
+  if(t>1){
+    w.big.AW[fund_codes,t,index] <- w.aw
+    turnover.AW[t,index] <- sum(abs(w.big.AW[,t,index]-w.big.AW[,t-1,index]))
+  }
+  #-----------------------------------
+  # Stack and reset 
+  #-----------------------------------
+  portf_ret_matrix_AW <- rbind(portf_ret_matrix_AW,this_portf_ret_AW)
+  this_portf_ret_AW <- c()
+  
+  #-----------------------------------
+  # Portfolio dates
+  #-----------------------------------
+  mons <- c("01","02","03","04","05","06","07","08","09","10","11","12")
+  Dates <- as.matrix(paste0(substr(date.vector[t+panel_length],1,4),mons))
+  portf_dates <- rbind(portf_dates,Dates)
+  
+}
+
+```
+
+
+# Data frame for portfolio returns and dates
+
+```{r}
+df.returns <- data.frame("AW"=portf_ret_matrix_AW)
+
+save(df.returns,file=paste0("../data_sets/Portfolio_returns_",file_name,".Rdata"))
+```
+
+# Save data frame of turnover
+
+
+```{r}
+colnames(turnover.AW) <- strategies_asset_weighted
+
+save(turnover.AW,file=paste0("../data_sets/Turnovers_",file_name,".Rdata"))
+
+```
+
